@@ -47,6 +47,7 @@ def test_conv_gauge_equivariance():
     out_order = 2
     channels = (16, 16)
     conv = GemConv(*channels, in_order, out_order, n_rings=n_rings).to(dtype)
+    conv.bias.data = torch.rand_like(conv.bias)
     x = torch.randn(num_v, channels[0], 2 * in_order + 1, dtype=dtype)
 
     x_c = conv(x, data.edge_index, data.precomp, data.connection)
@@ -55,4 +56,4 @@ def test_conv_gauge_equivariance():
     x_t = rep_act(x, -transform_angle)
     x_t_c = conv(x_t, data_t.edge_index, data_t.precomp, data_t.connection)
 
-    assert torch.allclose(x_c_t, x_t_c, atol=1e-14)
+    torch.testing.assert_allclose(x_c_t, x_t_c)

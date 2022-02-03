@@ -59,6 +59,7 @@ class GemConv(MessagePassing):
         self.weight = Parameter(
             torch.Tensor(self.kernel.shape[0], n_rings, out_channels, in_channels)
         )
+        self.register_buffer("bias_mask", torch.eye(2 * out_order + 1)[0])  # Only bias trivial rep
         self.bias = Parameter(torch.Tensor(out_channels))
         self.batch = batch
 
@@ -109,5 +110,5 @@ class GemConv(MessagePassing):
                 )
                 ys.append(y)
             y = torch.cat(ys)
-        y = y + self.bias[None, :, None]
+        y = y + self.bias[:, None] * self.bias_mask
         return y
