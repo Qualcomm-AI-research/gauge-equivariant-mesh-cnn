@@ -83,38 +83,23 @@ class GemPrecomp(object):
 
     def __call__(self, data):
         assert hasattr(data, "edge_coords")
-        # assert hasattr(data, 'weight')
-
-        # Conveniently name variables
-        # (row, col), (r, theta), weight = data.edge_index, data.edge_coords.T, data.weight
-        (row, col), (r, theta) = data.edge_index, data.edge_coords.T
-        N, M, R = row.size(0), 2 * self.max_order + 1, self.n_rings
-
+        r, theta = data.edge_coords.T
         # Normalize radius to range [0, 1]
         r = r / self.max_r if self.max_r is not None else r / r.max()
 
         # Compute interpolation weights for the radial profile function
-        radial_profile_weights = linear_interpolation_weights(r, R, zero_falloff=False)  # [N, R]
+        radial_profile_weights = linear_interpolation_weights(
+            r, self.n_rings, zero_falloff=False
+        )  # [N, R]
 
-        # Compute exponential component for each point
-        freq = torch.arange(1, self.max_order + 1, device=theta.device)
-        angles = theta.view(-1, 1) * freq  # [N, max_order]
-        exponential = torch.stack((torch.cos(angles), torch.sin(angles)), dim=-1).view(
-            N, M - 1
-        )  # [N, 2*max_order]
-        exponential = torch.cat((torch.ones(N, 1, device=theta.device), exponential), 1)  # [N, M]
-
-        # Set kernel for center points to 0
-        # Why this is necessary: for the center point, r = 0 and theta = 0
-        # Thus, the kernel value will always be 1 + i0, pointing to the - arbitrary - choice of basis
-        exponential[torch.nonzero(r == 0), 1:] = 0
-
-        # Finally, normalize weighting for every neighborhood and multiply with precomputation
-        # weight = weight / (1e-12 + scatter_add(weight, row)[row])  # [N]
-
-        # Combine precomputation components
-        # precomp = weight.view(N, 1, 1) * radial_profile_weights.view(N, 1, R) * exponential.view(N, M, 1)
-        precomp = radial_profile_weights.view(N, 1, R) * exponential.view(N, M, 1)
+        # Add weight for self interaction
+        self_interaction = (r == 0)[:, None].float()
+        radial_profile_weights = torch.cat(
+            [self_interaction, radial_profile_weights * (1 - self_interaction)], 1
+        )
+        angle_pre = (data.connection - theta)[:, None]
+        angle_post = theta[:, None]
+        precomp = torch.cat([angle_pre, angle_post, radial_profile_weights], 1)
 
         data.precomp = precomp  # [N, M, R]
 

@@ -26,5 +26,7 @@ class GaugeTransformer:
             -self.transform_angle[idx_to] + self.transform_angle[idx_from] + data.connection
         )
         r, th = data.edge_coords.T
-        new_data.edge_coords = torch.stack([r, th - self.transform_angle[idx_to]], 1)
+        # Do not transform r=0, to test gauge equi for self-interaction.
+        new_th = torch.where(r == 0, th, th - self.transform_angle[idx_to])
+        new_data.edge_coords = torch.stack([r, new_th], 1)
         return new_data

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="gem_cnn",
-    version="1.0.0",
+    version="1.3.0",
     packages=find_packages(include=["gem_cnn", "gem_cnn.*"]),
     url="",
     license='BSD 3-clause "Clear" License',

@@ -7,18 +7,51 @@ Data is arranged as:
 
 x[number of vertices in bach, number of channels, dimensionality of representation]
 """
-from functools import partial
+import math
 
 import torch
-from torch.nn import Parameter
-from torch.utils.checkpoint import checkpoint
+import torch.nn as nn
 from torch_geometric.nn.conv import MessagePassing
+from torch_geometric.nn.inits import zeros
 
-from torch_geometric.nn.inits import glorot, zeros
-
-from gem_cnn.utils.einsum import einsum
-from gem_cnn.utils.kernel import build_kernel
 from gem_cnn.utils.rep_act import rep_act
+
+
+def build_self_interaction_kernel(in_order, out_order):
+    num_bases = min(in_order, out_order) * 2 + 1
+    kernels = torch.zeros(num_bases, 2 * in_order + 1, 2 * out_order + 1)
+    for i in range(min(in_order, out_order) + 1):
+        if i == 0:
+            kernels[i, 0, 0] = 1
+        else:
+            kernels[2 * i - 1, 2 * i - 1, 2 * i - 1] = 1
+            kernels[2 * i - 1, 2 * i, 2 * i] = 1
+            kernels[2 * i, 2 * i - 1, 2 * i] = 1
+            kernels[2 * i, 2 * i, 2 * i - 1] = -1
+    return kernels
+
+
+class SelfInteractionWeight(nn.Module):
+    def __init__(self, in_channels, out_channels, in_order, out_order):
+        super().__init__()
+        self.register_buffer("kernels", build_self_interaction_kernel(in_order, out_order))  # [bmn]
+        self.weight = nn.Parameter(
+            torch.empty((len(self.kernels), in_channels, out_channels))
+        )  # [bji]
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        fan_in = self.weight.shape[1] * self.kernels.shape[1]
+        fan_out = self.weight.shape[2] * self.kernels.shape[2]
+        stdv = math.sqrt(6.0 / (fan_in + fan_out))
+        self.weight.data.uniform_(-stdv, stdv)
+
+    def forward(self):
+        """
+
+        :return: [in_channels, 2*in_order+1, out_channels, 2*out_order+1]
+        """
+        return torch.einsum("bji,bmn->jmin", self.weight, self.kernels)
 
 
 class GemConv(MessagePassing):
@@ -31,8 +64,8 @@ class GemConv(MessagePassing):
         in_order (int): order of input
         out_order (int): order of output
         n_rings (int): number of radial rings
-        band_limit (int, optional): maximum theta frequency used
-        batch (int, optional): compute edges in batches, checkpointed to save memory
+        band_limit (int, optional): maximum theta frequency used  DOES NOTHING CURRENTLY
+        batch (int, optional): compute edges in batches, checkpointed to save memory DOES NOTHING CURRENTLY
     """
 
     def __init__(
@@ -51,64 +84,49 @@ class GemConv(MessagePassing):
         self.in_order = in_order
         self.out_order = out_order
         self.n_rings = n_rings
-        # self.kernel has shape [n_bases, 2 * band_limit + 1, 2 * order_out + 1, 2 * order_in + 1]
+        weight_shape = (n_rings, in_channels, 2 * in_order + 1, out_channels, 2 * out_order + 1)
+        self.weight = nn.Parameter(torch.Tensor(*weight_shape))
+        self.self_weight = SelfInteractionWeight(in_channels, out_channels, in_order, out_order)
+        self.bias = nn.Parameter(torch.Tensor(out_channels, 2 * out_order + 1))
         self.register_buffer(
-            "kernel",
-            torch.tensor(build_kernel(in_order, out_order, band_limit), dtype=torch.float32),
-        )
-        self.weight = Parameter(
-            torch.Tensor(self.kernel.shape[0], n_rings, out_channels, in_channels)
-        )
-        self.register_buffer("bias_mask", torch.eye(2 * out_order + 1)[0])  # Only bias trivial rep
-        self.bias = Parameter(torch.Tensor(out_channels))
-        self.batch = batch
+            "bias_mask", torch.eye(2 * out_order + 1)[0]
+        )  # Only bias trivial rep on self interactions
 
         self.reset_parameters()
 
     def reset_parameters(self):
-        glorot(self.weight)
         zeros(self.bias)
+        fan_in = self.weight.shape[1] * self.weight.shape[2]
+        fan_out = self.weight.shape[3] * self.weight.shape[4]
+        stdv = math.sqrt(6.0 / (fan_in + fan_out))
+        self.weight.data.uniform_(-stdv, stdv)
 
     def forward(self, x, edge_index, precomp, connection):
         assert x.shape[1] == self.in_channels
         assert x.shape[2] == 2 * self.in_order + 1
-        assert precomp.dim() == 3
-        out = self.propagate(edge_index=edge_index, x=x, precomp=precomp, connection=connection)
+        out = self.propagate(edge_index=edge_index, x=x, precomp=precomp)
 
         return out
 
-    def message(self, x_j, precomp, connection):
+    def message(self, x_j, precomp):
         """
         :param x_j: [n_edges, in_channels, 2*in_order+1]
-        :param precomp [n_edges, 2*band_limit+1, n_rings]
-        :param connection: [n_edges]
+        :param precomp: [n_edges, 2+n_rings]
         :return: [num_v, out_channels, 2*out_order+1]
         """
-        assert (
-            self.kernel.shape[1] <= precomp.shape[1]
-        ), "Kernel set with higher band-limit than precompute"
-        precomp = precomp[:, : self.kernel.shape[1]]
+        angle_pre, angle_post = precomp[:, :2].T
+        radial_weights = precomp[:, 2:]
+        x_j_transported = rep_act(x_j, angle_pre)  # connection-theta
+        weight = torch.cat([self.self_weight()[None], self.weight])
 
-        x_j_transported = rep_act(x_j, connection)
-        if self.batch is None:
-            y = einsum(
-                "ejm,efr,bfnm,brij->ein",
-                x_j_transported,
-                precomp,
-                self.kernel,
-                self.weight,
-            )
-        else:
-            ys = []
-            for i in range(0, x_j.shape[0], self.batch):
-                y = checkpoint(
-                    partial(einsum, "ejm,efr,bfnm,brij->ein"),
-                    x_j_transported[i : i + self.batch],
-                    precomp[i : i + self.batch],
-                    self.kernel,
-                    self.weight,
-                )
-                ys.append(y)
-            y = torch.cat(ys)
-        y = y + self.bias[:, None] * self.bias_mask
+        y_theta0 = torch.einsum(
+            "ejm,er,rjmin->ein",
+            x_j_transported,
+            radial_weights,
+            weight,
+        )
+        not_self = radial_weights[:, 0] == 0
+        y_theta0 = y_theta0 + self.bias * not_self[:, None, None]
+        y_theta0 = y_theta0 + self.bias * self.bias_mask * ~not_self[:, None, None]
+        y = rep_act(y_theta0, angle_post)  # +theta
         return y

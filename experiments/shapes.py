@@ -11,11 +11,13 @@ from torch_geometric.data import DataLoader
 from torch_geometric.datasets import GeometricShapes
 from torch_geometric.nn import global_mean_pool
 
-from gem_cnn.nn.gem_res_net_block import GemResNetBlock
-from gem_cnn.transform.gem_precomp import GemPrecomp
-from gem_cnn.transform.matrix_features_transform import MatrixFeaturesTransform
-from gem_cnn.transform.simple_geometry import SimpleGeometry
-from gem_cnn.transform.vector_normals import compute_normals_edges_from_mesh
+from gem_cnn.nn import GemResNetBlock
+from gem_cnn.transform import (
+    GemPrecomp,
+    SimpleGeometry,
+    compute_normals_edges_from_mesh,
+    MatrixFeaturesTransform,
+)
 
 max_order = 2
 

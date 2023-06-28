@@ -16,12 +16,8 @@ from torch_geometric.data import DataLoader
 from gem_cnn.transform.scale_mask import ScaleMask
 from gem_cnn.transform.multiscale_radius_graph import MultiscaleRadiusGraph
 
-from gem_cnn.nn.gem_res_net_block import GemResNetBlock
-from gem_cnn.nn.pool import ParallelTransportPool
-from gem_cnn.transform.gem_precomp import GemPrecomp
-
-from gem_cnn.transform.simple_geometry import SimpleGeometry
-from gem_cnn.transform.vector_normals import compute_normals_edges_from_mesh
+from gem_cnn.nn import GemResNetBlock, ParallelTransportPool
+from gem_cnn.transform import GemPrecomp, SimpleGeometry, compute_normals_edges_from_mesh
 
 max_order = 2
 
